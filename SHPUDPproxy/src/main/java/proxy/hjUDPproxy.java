@@ -16,8 +16,10 @@ package proxy;
  *       Both configurable in the file config.properties
  */
 
+import java.io.ByteArrayInputStream;
 import java.io.FileInputStream;
 import java.io.InputStream;
+import java.io.ObjectInputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
@@ -45,6 +47,7 @@ import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.PBEParameterSpec;
 
+import socket.SSPPacket;
 import socket.SSPSockets;
 
 class hjUDPproxy {
@@ -73,7 +76,9 @@ class hjUDPproxy {
 
 		SSPSockets inSocket = new SSPSockets(inSocketAddress);
 		DatagramSocket outSocket = new DatagramSocket();
-		byte[] buffer = new byte[5 * 1024];
+		byte[] buffer = new byte[4 * 1024];
+
+		byte[] receiveBuffer = new byte[4*1024];
 		DatagramPacket receivePacket = new DatagramPacket(buffer, buffer.length);
 		
 		byte[] helloSSP = inSocket.helloPayload(args, buffer);
@@ -83,10 +88,19 @@ class hjUDPproxy {
 		
 		System.out.println("HelloSSP len: "+helloSSP.length);
 		
-		DatagramPacket p = new DatagramPacket(helloSSP, helloSSP.length);
+		System.arraycopy(helloSSP, 0, buffer, 0, helloSSP.length);
+		
+		System.out.println("buffer len: "+ buffer.length);
+		DatagramPacket p = new DatagramPacket(buffer, helloSSP.length);
 		p.setSocketAddress(addr);
         inSocket.send(p);
         inSocket.receive(receivePacket);
+		ByteArrayInputStream bais = new ByteArrayInputStream(receivePacket.getData(), 0, receivePacket.getLength());
+		ObjectInputStream ois = new ObjectInputStream(bais);
+		SSPPacket ssp = (SSPPacket) ois.readObject();
+		byte[] data = ssp.getPayload();
+        System.out.println("here");
+        
 		
 		while (true) {
 			DatagramPacket inPacket = new DatagramPacket(buffer, buffer.length);
