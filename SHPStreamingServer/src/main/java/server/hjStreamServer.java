@@ -29,6 +29,7 @@ import java.util.Random;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.PBEParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
@@ -125,23 +126,9 @@ class hjStreamServer {
 				
 		        System.out.println("Transmited cipher: "+new String(pbeBytes,StandardCharsets.UTF_8));
 		        System.out.println("Transmited cipher len: " + pbeBytes.length);
-
-				SecretKeyFactory keyFact = SecretKeyFactory.getInstance(pbeSuite);
-				Cipher cDec = Cipher.getInstance(pbeSuite);
-		        Key skey;
-		        if(!pbeSuite.contains("AES")) {
-		            PBEKeySpec pbeSpec = new PBEKeySpec(hashPassword.toCharArray(),salt,iterCount);
-		            skey = keyFact.generateSecret(pbeSpec);
-		        }
-		        else {
-		        	int keySize = Integer.valueOf(pbeSuite.substring(pbeSuite.length()-3,pbeSuite.length()));
-		        	PBEKeySpec pbeSpec = new PBEKeySpec(hashPassword.toCharArray(),salt,iterCount,keySize);
-		        	Key tmp = keyFact.generateSecret(pbeSpec);
-		        	skey = new SecretKeySpec(tmp.getEncoded(), "AES");
-		        }   
-				
-				cDec.init(Cipher.DECRYPT_MODE, skey);
-				
+		        
+		        Cipher cDec = s.getPBECipher(pbeSuite, hashPassword, Cipher.DECRYPT_MODE);
+		        
 				cDec.doFinal(pbeBytes);
 
 				byte[] sigInput = new byte[2048 + 256 + 4];

@@ -87,12 +87,6 @@ class hjUDPproxy {
 		p.setSocketAddress(addr);
         inSocket.send(p);
         inSocket.receive(receivePacket);
-        /*challengeResp(buffer);
-        inSocket.send(buffer);
-        inSocket.receive(buffer);
-        suiteResp(buffer);
-        inSocket.send(buffer);
-        */
 		
 		while (true) {
 			DatagramPacket inPacket = new DatagramPacket(buffer, buffer.length);

@@ -87,6 +87,8 @@ public class SSPSockets extends DatagramSocket {
 	private Mac mac_1;
 	private Mac mac_2;
 	private boolean noMAC = true;
+    private byte[] salt = new byte[] { (byte)0x7d, 0x60, 0x43, (byte)0x5f, 0x02, (byte) 0xe9, (byte) 0xe0, (byte) 0xae };
+    private int iterCount = 2048;
 	
 	public SSPSockets(SocketAddress sockAddr) throws SocketException {
 		super(sockAddr);
@@ -187,22 +189,9 @@ public class SSPSockets extends DatagramSocket {
         System.out.println(hash);
         byte[] hashInput = new byte[helloString.length() + proxyID.length() + movieBytes.length + nonce.length];
         System.arraycopy(buffer, 0, hashInput, 0, hashInput.length);
-        byte[] salt = new byte[] { (byte)0x7d, 0x60, 0x43, (byte)0x5f, 0x02, (byte) 0xe9, (byte) 0xe0, (byte) 0xae };
-        int iterCount = 2048;
-        SecretKeyFactory keyFact = SecretKeyFactory.getInstance(PWDCS);
-        Cipher cipher = Cipher.getInstance(PWDCS);
-        Key skey;
-        if(!PWDCS.contains("AES")) {
-            PBEKeySpec pbeSpec = new PBEKeySpec(hash.toCharArray(),salt,iterCount);
-            skey = keyFact.generateSecret(pbeSpec);
-        }
-        else {
-        	int keySize = Integer.valueOf(PWDCS.substring(PWDCS.length()-3,PWDCS.length()));
-        	PBEKeySpec pbeSpec = new PBEKeySpec(hash.toCharArray(),salt,iterCount,keySize);
-        	Key tmp = keyFact.generateSecret(pbeSpec);
-        	skey = new SecretKeySpec(tmp.getEncoded(), "AES");
-        }       
-        cipher.init(Cipher.ENCRYPT_MODE, skey);
+        
+        Cipher cipher = getPBECipher(PWDCS, hash, Cipher.ENCRYPT_MODE);
+        
         System.out.println("Before ciphering: " + new String(hashInput,StandardCharsets.UTF_8));
         byte[] finalCipher = cipher.doFinal(hashInput);
         System.arraycopy(finalCipher, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length + nonce.length + pwdcBytes.length, finalCipher.length);
@@ -220,6 +209,27 @@ public class SSPSockets extends DatagramSocket {
         System.out.println("Payload expected: "+ payloadLen);
         
         return preparePayload(buffer, payloadLen, (byte)0x02,(byte)0x01);
+	}
+
+	private Cipher getPBECipher(String PWDCS, String hash, int mode) throws NoSuchAlgorithmException,
+			NoSuchPaddingException, InvalidKeySpecException, InvalidKeyException, InvalidAlgorithmParameterException {
+		PBEParameterSpec pSpec;
+        PBEKeySpec pbeKeySpec;
+        Key skey;
+		SecretKeyFactory keyFact = SecretKeyFactory.getInstance(PWDCS);
+		Cipher cipher = Cipher.getInstance(PWDCS);
+        if (PWDCS.contains("AES")) {
+        	IvParameterSpec ivSp = new IvParameterSpec(new byte[16]);
+        	pSpec = new PBEParameterSpec(salt, iterCount,ivSp);
+        	pbeKeySpec = new PBEKeySpec(hash.toCharArray(),salt,iterCount);
+        	skey = keyFact.generateSecret(pbeKeySpec);
+        }else {
+        	pbeKeySpec = new PBEKeySpec(hash.toCharArray());
+        	skey = keyFact.generateSecret(pbeKeySpec);
+        	pSpec = new PBEParameterSpec(salt, iterCount);
+        }
+        cipher.init(mode,skey,pSpec);
+		return cipher;
 	}
 	
 	

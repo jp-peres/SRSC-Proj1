@@ -41,6 +41,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 import java.security.SecureRandom;
+import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.InvalidKeySpecException;
 import java.net.SocketAddress;
 
@@ -86,6 +87,8 @@ public class SSPSockets extends DatagramSocket {
 	private Mac mac_1;
 	private Mac mac_2;
 	private boolean noMAC = true;
+    private byte[] salt = new byte[] { (byte)0x7d, 0x60, 0x43, (byte)0x5f, 0x02, (byte) 0xe9, (byte) 0xe0, (byte) 0xae };
+    private int iterCount = 2048;
 	
 	public SSPSockets(SocketAddress sockAddr) throws SocketException {
 		super(sockAddr);
@@ -160,41 +163,73 @@ public class SSPSockets extends DatagramSocket {
         String movie =  args[3];
         byte[] movieBytes = ByteBuffer.allocate(30).put(movie.getBytes()).array();
         byte[] pwdcBytes = ByteBuffer.allocate(27).put(PWDCS.getBytes()).array();
+        System.out.println("PWDCBytes: "+ pwdcBytes.length);
 
-        Random r = new Random();
-        byte[] nounce = ByteBuffer.allocate(4).putInt(r.nextInt()).array();
+        SecureRandom r = new SecureRandom();
+        int nonceVal = r.nextInt();
+        byte[] nonce = ByteBuffer.allocate(Integer.BYTES).putInt(nonceVal).array();
+        System.out.println("Nonce len:"+nonce.length);
+        System.out.println(nonceVal);
+        
+        
+        System.out.println("buffer len: "+buffer.length);
+        System.out.println("PWDC: "+ new String(pwdcBytes,StandardCharsets.UTF_8));
         
         System.arraycopy(helloString.getBytes(), 0, buffer, 0, helloString.length());
         System.arraycopy(proxyID.getBytes(), 0, buffer, helloString.length(), proxyID.length());
         System.arraycopy(movieBytes, 0, buffer, helloString.length() + proxyID.length(), movieBytes.length);
-        System.arraycopy(nounce, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length, 4);
-        System.arraycopy(pwdcBytes, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length + 4, pwdcBytes.length);
+        System.arraycopy(nonce, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length, nonce.length);
+        System.arraycopy(pwdcBytes, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length + nonce.length, pwdcBytes.length);
        
         MessageDigest pwdHash = MessageDigest.getInstance("SHA-256");
         pwdHash.update(pwd.getBytes());
         byte[] hashPass = pwdHash.digest();
         String hash = SSPSockets.toHex(hashPass,hashPass.length);
         
-        byte[] hashInput = new byte[helloString.length() + proxyID.length() + movieBytes.length + 4];
+        System.out.println(hash);
+        byte[] hashInput = new byte[helloString.length() + proxyID.length() + movieBytes.length + nonce.length];
         System.arraycopy(buffer, 0, hashInput, 0, hashInput.length);
-        byte[] salt = new byte[] {0x7d, 0x60, 0x43, 0x5f, 0x02, (byte)0xe9, (byte)0xe0, (byte)0xae};
-        int iterationCount = 2048;
-        PBEKeySpec pbeSpec = new PBEKeySpec(hash.toCharArray());
-        SecretKeyFactory keyFact = SecretKeyFactory.getInstance(PWDCS);
-        Cipher cipher = Cipher.getInstance(PWDCS);
-        Key skey = keyFact.generateSecret(pbeSpec);
-        PBEParameterSpec pbspec =  new PBEParameterSpec(salt, iterationCount);
-        cipher.init(Cipher.ENCRYPT_MODE, skey, pbspec);
         
-        byte[] finalCipher = cipher.doFinal(hashInput, 0, hashInput.length);
-        System.out.println("finalCipher:"+finalCipher.length);
-        System.arraycopy(finalCipher, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length + 4 + pwdcBytes.length, finalCipher.length);
+        Cipher cipher = getPBECipher(PWDCS, hash, Cipher.ENCRYPT_MODE);
         
-        int payloadLen = helloString.length() + proxyID.length() + movieBytes.length + 4 + pwdcBytes.length + finalCipher.length;
+        System.out.println("Before ciphering: " + new String(hashInput,StandardCharsets.UTF_8));
+        byte[] finalCipher = cipher.doFinal(hashInput);
+        System.arraycopy(finalCipher, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length + nonce.length + pwdcBytes.length, finalCipher.length);
+
+        
+
+        System.out.println("Expected cipher: "+new String(finalCipher,StandardCharsets.UTF_8));
+        
+        System.out.println("Expected cipher len:"+finalCipher.length);
+        
+        int payloadLen = helloString.length() + proxyID.length() + movieBytes.length + nonce.length + pwdcBytes.length + finalCipher.length;
+        
+        System.out.println("Final buffer: " + new String(buffer,0,payloadLen,StandardCharsets.UTF_8));
         
         System.out.println("Payload expected: "+ payloadLen);
         
         return preparePayload(buffer, payloadLen, (byte)0x02,(byte)0x01);
+	}
+
+	public Cipher getPBECipher(String PWDCS, String hash, int mode) throws NoSuchAlgorithmException,
+			NoSuchPaddingException, InvalidKeySpecException, InvalidKeyException, InvalidAlgorithmParameterException {
+		PBEParameterSpec pSpec;
+        PBEKeySpec pbeKeySpec;
+        Key skey;
+		SecretKeyFactory keyFact = SecretKeyFactory.getInstance(PWDCS);
+		Cipher cipher = Cipher.getInstance(PWDCS);
+        if (PWDCS.contains("AES")) {
+        	IvParameterSpec ivSp = new IvParameterSpec(new byte[16]);
+        	pSpec = new PBEParameterSpec(salt, iterCount,ivSp);
+        	pbeKeySpec = new PBEKeySpec(hash.toCharArray(),salt,iterCount);
+        	skey = keyFact.generateSecret(pbeKeySpec);
+        }else {
+        	pbeKeySpec = new PBEKeySpec(hash.toCharArray());
+        	skey = keyFact.generateSecret(pbeKeySpec);
+        	pSpec = new PBEParameterSpec(salt, iterCount);
+        }
+        cipher.init(mode,skey,pSpec);
+		return cipher;
 	}
 	
 	
