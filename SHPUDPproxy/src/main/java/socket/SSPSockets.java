@@ -41,6 +41,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 import java.security.SecureRandom;
+import java.security.spec.AlgorithmParameterSpec;
 import java.security.spec.InvalidKeySpecException;
 import java.net.SocketAddress;
 
@@ -91,8 +92,8 @@ public class SSPSockets extends DatagramSocket {
 		super(sockAddr);
 	}
 	
-	public SSPSockets(String config) throws IOException {
-		super();
+	public SSPSockets(SocketAddress sockAddr, String config) throws IOException {
+		super(sockAddr);
 		InputStream inputStream = null;
 		try {
 			inputStream = new FileInputStream(config);
@@ -101,33 +102,32 @@ public class SSPSockets extends DatagramSocket {
 			System.err.println("Configuration file not found!");
 			System.exit(1);
 		}
-
 		Properties properties = new Properties();
 		properties.load(inputStream);
 		cipherSuite = properties.getProperty("CRYPTO-CIPHERSUITE");
 		algorithm = cipherSuite.substring(0, cipherSuite.indexOf("/"));
 		mac1 = properties.getProperty("MAC1-CIPHERSUITE");
 		mac2 = properties.getProperty("MAC2-CIPHERSUITE");
-		iv = toByteArray(properties.getProperty("IV"));
+		iv = toByteArray(properties.getProperty("IV").trim());
 		sessionKeySize = properties.getProperty("SESSION-KEYSIZE");
-		sessionKey = new SecretKeySpec(toByteArray(properties.getProperty("SESSION-KEY")), algorithm);
+		sessionKey = new SecretKeySpec(toByteArray(properties.getProperty("SESSION-KEY").trim()), algorithm);
 
 		if (!mac1.equals("NULL")) {
 			noMAC = false;
 			mac1KeySize = properties.getProperty("MAC1-KEYSIZE");
-			mac1Key = new SecretKeySpec(toByteArray(properties.getProperty("MAC1-KEY")), mac1);
+			mac1Key = new SecretKeySpec(toByteArray(properties.getProperty("MAC1-KEY").trim()), mac1);
 		}
 		mac2KeySize = properties.getProperty("MAC2-KEYSIZE");
-		mac2Key = new SecretKeySpec(toByteArray(properties.getProperty("MAC2-KEY")), mac2);
+		mac2Key = new SecretKeySpec(toByteArray(properties.getProperty("MAC2-KEY").trim()), mac2);
 		ivSpec = new IvParameterSpec(iv);
-
+		
 		try {
 			cipher = Cipher.getInstance(cipherSuite);
 		} catch (Exception ex) {
 			ex.printStackTrace();
 		}
 	}
-
+	
 	public static byte[] toByteArray(String string) {
 		String[] stringArray = string.split(",");
 		byte[] bytes = new byte[stringArray.length];
@@ -159,36 +159,65 @@ public class SSPSockets extends DatagramSocket {
         if (proxyID.length() != 5)
         	throw new Exception("ProxyID must be comprised of 5 characters.");
         String movie =  args[3];
-        
+        byte[] movieBytes = ByteBuffer.allocate(30).put(movie.getBytes()).array();
+        byte[] pwdcBytes = ByteBuffer.allocate(27).put(PWDCS.getBytes()).array();
+        System.out.println("PWDCBytes: "+ pwdcBytes.length);
 
-        Random r = new Random();
-        byte[] nounce = ByteBuffer.allocate(4).putInt(r.nextInt()).array();
+        SecureRandom r = new SecureRandom();
+        int nonceVal = r.nextInt();
+        byte[] nonce = ByteBuffer.allocate(Integer.BYTES).putInt(nonceVal).array();
+        System.out.println("Nonce len:"+nonce.length);
+        System.out.println(nonceVal);
+        
+        
+        System.out.println("buffer len: "+buffer.length);
+        System.out.println("PWDC: "+ new String(pwdcBytes,StandardCharsets.UTF_8));
         
         System.arraycopy(helloString.getBytes(), 0, buffer, 0, helloString.length());
         System.arraycopy(proxyID.getBytes(), 0, buffer, helloString.length(), proxyID.length());
-        System.arraycopy(movie.getBytes(), 0, buffer, helloString.length() + proxyID.length(), movie.length());
-        System.arraycopy(nounce, 0, buffer, helloString.length() + proxyID.length() + movie.length(), 4);
-        System.arraycopy(PWDCS.getBytes(), 0, buffer, helloString.length() + proxyID.length() + movie.length() + 4, PWDCS.length());
+        System.arraycopy(movieBytes, 0, buffer, helloString.length() + proxyID.length(), movieBytes.length);
+        System.arraycopy(nonce, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length, nonce.length);
+        System.arraycopy(pwdcBytes, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length + nonce.length, pwdcBytes.length);
        
-        MessageDigest pwdHash = MessageDigest.getInstance("SHA256");
+        MessageDigest pwdHash = MessageDigest.getInstance("SHA-256");
         pwdHash.update(pwd.getBytes());
         byte[] hashPass = pwdHash.digest();
         String hash = SSPSockets.toHex(hashPass,hashPass.length);
         
-        byte[] hashInput = new byte[helloString.length() + proxyID.length() + movie.length() + 4];
+        System.out.println(hash);
+        byte[] hashInput = new byte[helloString.length() + proxyID.length() + movieBytes.length + nonce.length];
         System.arraycopy(buffer, 0, hashInput, 0, hashInput.length);
-        byte[] salt = new byte[] {0x7d, 0x60, 0x43, 0x5f, 0x02, (byte)0xe9, (byte)0xe0, (byte)0xae};
-        int iterationCount = 2048;
-        PBEKeySpec pbeSpec = new PBEKeySpec(hash.toCharArray());
+        byte[] salt = new byte[] { (byte)0x7d, 0x60, 0x43, (byte)0x5f, 0x02, (byte) 0xe9, (byte) 0xe0, (byte) 0xae };
+        int iterCount = 2048;
         SecretKeyFactory keyFact = SecretKeyFactory.getInstance(PWDCS);
         Cipher cipher = Cipher.getInstance(PWDCS);
-        Key skey = keyFact.generateSecret(pbeSpec);
-        cipher.init(Cipher.ENCRYPT_MODE, skey, new PBEParameterSpec(salt, iterationCount));
+        Key skey;
+        if(!PWDCS.contains("AES")) {
+            PBEKeySpec pbeSpec = new PBEKeySpec(hash.toCharArray(),salt,iterCount);
+            skey = keyFact.generateSecret(pbeSpec);
+        }
+        else {
+        	int keySize = Integer.valueOf(PWDCS.substring(PWDCS.length()-3,PWDCS.length()));
+        	PBEKeySpec pbeSpec = new PBEKeySpec(hash.toCharArray(),salt,iterCount,keySize);
+        	Key tmp = keyFact.generateSecret(pbeSpec);
+        	skey = new SecretKeySpec(tmp.getEncoded(), "AES");
+        }       
+        cipher.init(Cipher.ENCRYPT_MODE, skey);
+        System.out.println("Before ciphering: " + new String(hashInput,StandardCharsets.UTF_8));
+        byte[] finalCipher = cipher.doFinal(hashInput);
+        System.arraycopy(finalCipher, 0, buffer, helloString.length() + proxyID.length() + movieBytes.length + nonce.length + pwdcBytes.length, finalCipher.length);
+
         
-        byte[] finalCipher = cipher.doFinal(hashInput, 0, hashInput.length);
-        System.arraycopy(finalCipher, 0, buffer, helloString.length() + proxyID.length() + movie.length() + 4 + PWDCS.length(), finalCipher.length);
+
+        System.out.println("Expected cipher: "+new String(finalCipher,StandardCharsets.UTF_8));
         
-        int payloadLen = helloString.length() + proxyID.length() + movie.length() + 4 + PWDCS.length() + finalCipher.length;
+        System.out.println("Expected cipher len:"+finalCipher.length);
+        
+        int payloadLen = helloString.length() + proxyID.length() + movieBytes.length + nonce.length + pwdcBytes.length + finalCipher.length;
+        
+        System.out.println("Final buffer: " + new String(buffer,0,payloadLen,StandardCharsets.UTF_8));
+        
+        System.out.println("Payload expected: "+ payloadLen);
         
         return preparePayload(buffer, payloadLen, (byte)0x02,(byte)0x01);
 	}
@@ -214,6 +243,7 @@ public class SSPSockets extends DatagramSocket {
 			oos.writeObject(packetToSend);
 			oos.flush();
 			res = baos.toByteArray();
+			System.out.println("Prepare payload len:" + res.length);
 		} catch (Exception ex) {
 			ex.printStackTrace();
 		}

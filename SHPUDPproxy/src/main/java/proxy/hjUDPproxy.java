@@ -22,6 +22,9 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.StandardCharsets;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.Key;
@@ -52,27 +55,36 @@ class hjUDPproxy {
 			System.exit(1);
 		}
 		if (args.length != 4) {
-			System.err.println("SHPStreamingServer <proxyId> <password> <pcbciphersuite> <movie>");
+			System.err.println("SHPUDPproxy <proxyId> <password> <pcbciphersuite> <movie>");
 			System.exit(1);
 		}
 		
 		Properties properties = new Properties();
 		properties.load(inputStream);
-		String remote = properties.getProperty("remote");
+		String proxyaddr = properties.getProperty("proxyaddr");
+		String streamaddr = properties.getProperty("streamaddr");
 		String destinations = properties.getProperty("localdelivery");
 		
-		SocketAddress inSocketAddress = parseSocketAddress(remote);
+		SocketAddress inSocketAddress = parseSocketAddress(proxyaddr);
+		SocketAddress addr = parseSocketAddress(streamaddr);
+		
 		Set<SocketAddress> outSocketAddressSet = Arrays.stream(destinations.split(",")).map(s -> parseSocketAddress(s))
 				.collect(Collectors.toSet());
 
 		SSPSockets inSocket = new SSPSockets(inSocketAddress);
 		DatagramSocket outSocket = new DatagramSocket();
-		byte[] buffer = new byte[4 * 1024];
+		byte[] buffer = new byte[5 * 1024];
 		DatagramPacket receivePacket = new DatagramPacket(buffer, buffer.length);
 		
 		byte[] helloSSP = inSocket.helloPayload(args, buffer);
 		
+		String payloadCont = new String(helloSSP,StandardCharsets.UTF_8);
+		System.out.println(payloadCont);
+		
+		System.out.println("HelloSSP len: "+helloSSP.length);
+		
 		DatagramPacket p = new DatagramPacket(helloSSP, helloSSP.length);
+		p.setSocketAddress(addr);
         inSocket.send(p);
         inSocket.receive(receivePacket);
         /*challengeResp(buffer);

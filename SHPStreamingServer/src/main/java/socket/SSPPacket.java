@@ -23,6 +23,8 @@ public class SSPPacket implements Serializable {
     public SSPPacket(byte[] payload, byte contentType, byte payloadType, int payloadSize) {
         this.payloadSize = payloadSize;
         this.ciphered = payload;
+        
+        
         this.contentType = contentType;
         this.payloadType = payloadType;
     }
