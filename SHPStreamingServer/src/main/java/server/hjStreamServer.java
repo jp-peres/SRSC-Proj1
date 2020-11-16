@@ -12,26 +12,8 @@ import java.io.ObjectInputStream;
 import java.net.DatagramPacket;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.security.InvalidAlgorithmParameterException;
-import java.security.InvalidKeyException;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.security.Signature;
-import java.security.SignatureException;
-import java.security.spec.InvalidKeySpecException;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Random;
-
-import javax.crypto.BadPaddingException;
-import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.NoSuchPaddingException;
 
 import socket.SSPPacket;
 import socket.SSPSockets;
@@ -71,7 +53,7 @@ class hjStreamServer {
 		byte[] salt = new byte[] { 0x7d, 0x60, 0x43, 0x5f, 0x02, (byte) 0xe9, (byte) 0xe0, (byte) 0xae };
 		int iterCount = 2048;
 
-		byte[] buff = new byte[4 * 1024];
+		byte[] buff = new byte[5 * 1024];
 		SocketAddress serverAddress = parseSocketAddress(args[0]);
 		SocketAddress addr = parseSocketAddress(args[1]);
 
@@ -95,10 +77,12 @@ class hjStreamServer {
 			if (ssp.getContentType() == 0x02) {
 				switch (ssp.getPayloadType()) {
 					case 0x01:
-						byte[] challengePayload = s.getAuthChallenge(accounts, s, ssp, buff);
+						byte[] challengePayload = s.getAuthChallenge(accounts, ssp, buff,SIG_SUITE);
 						response = new DatagramPacket(challengePayload,challengePayload.length,addr);
 						break;
 					case 0x03:
+						byte[] keySA = s.getKeySA(buff)
+						System.out.println("im here");
 						break;
 				}
 			}

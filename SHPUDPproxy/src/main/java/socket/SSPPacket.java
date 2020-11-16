@@ -3,11 +3,6 @@ import java.io.Serializable;
 
 public class SSPPacket implements Serializable {
 
-    /**
-     * 
-     *
-     */
-
     private static final long serialVersionUID = 1L;
 
     private byte[] version = { 0x01, 0x01 };
@@ -33,9 +28,7 @@ public class SSPPacket implements Serializable {
     }
 
     public byte[] getVersion() {
-
         return this.version;
-
     }
 
     public byte getContentType(){

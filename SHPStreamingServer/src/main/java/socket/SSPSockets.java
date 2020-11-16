@@ -18,15 +18,18 @@ import java.nio.charset.StandardCharsets;
 import java.security.InvalidAlgorithmParameterException;
 import java.security.InvalidKeyException;
 import java.security.Key;
+import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.SignatureException;
+import java.security.spec.ECGenParameterSpec;
 import java.security.spec.InvalidKeySpecException;
-import java.sql.PreparedStatement;
+import java.security.spec.X509EncodedKeySpec;
 import java.net.SocketAddress;
 import java.util.Map;
 import java.util.Properties;
@@ -34,17 +37,30 @@ import java.util.Random;
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
 import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.KeyAgreement;
 import javax.crypto.Mac;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.ShortBufferException;
+import javax.crypto.spec.DHParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.PBEParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 
 public class SSPSockets extends DatagramSocket {
-
+	
+	// DH params
+	private static BigInteger g = new BigInteger(
+            "153d5d6172adb43045b68ae8e1de1070b6137005686d29d3d73a7"
+          + "749199681ee5b212c9b96bfdcfa5b20cd5e3fd2044895d609cf9b"
+          + "410b7a0f12ca1cb9a428cc", 16);
+    private static BigInteger p = new BigInteger(
+            "9494fec095f3b85ee286542b3836fc81a5dd0a0349b4c239dd387"
+          + "44d488cf8e31db8bcb7d33b41abb9e5a33cca9144b1cef332c94b"
+          + "f0573bf047a3aca98cdf3b", 16);
+    
+    
 	private static String digits = "0123456789abcdef";
 	private static final int ID_LENGTH = 6;
 	private static final int MOVIE_ID_LEN = 30;
@@ -60,6 +76,21 @@ public class SSPSockets extends DatagramSocket {
 	private MessageDigest nonceHash;
     private byte[] salt = new byte[] { (byte)0x7d, 0x60, 0x43, (byte)0x5f, 0x02, (byte) 0xe9, (byte) 0xe0, (byte) 0xae };
     private int iterCount = 2048;
+    
+    private byte[] n1;
+    private byte[] n2;
+    private byte[] n3;
+    private byte[] n4;
+    
+    private KeyPair myDHKeyPair;
+    private Key otherPubDHKey;
+    private KeyAgreement myKeyAgree;
+    
+    
+    private Key pubKeyProxy;
+    private Key privKeyProxy;
+    private Key pubKeyServer;
+    private Key privKeyServer;
 	// Properties
 	private String cipherSuite;
 	private String algorithm;
@@ -77,15 +108,32 @@ public class SSPSockets extends DatagramSocket {
 	private Mac mac_1;
 	private Mac mac_2;
 	private boolean noMAC = true;
+	private SecureRandom r;
 
-	public SSPSockets(SocketAddress sockAddr) throws SocketException, NoSuchAlgorithmException {
+	public SSPSockets(SocketAddress sockAddr) throws SocketException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException {
 		super(sockAddr);
-		nonceHash = MessageDigest.getInstance("SHA-256");
+		nonceHash = MessageDigest.getInstance(SHA256);
+		DHParameterSpec dhParams = new DHParameterSpec(p, g);
+	    KeyPairGenerator keyGen = KeyPairGenerator.getInstance("DH");
+	    keyGen.initialize(dhParams);
+		r = new SecureRandom();
+		myKeyAgree = KeyAgreement.getInstance("DH");
+		myDHKeyPair = keyGen.generateKeyPair();
+        myKeyAgree.init(myDHKeyPair.getPrivate());
+        
 	}
 
-	public SSPSockets(SocketAddress sockAddr, String config) throws IOException, NoSuchAlgorithmException {
+	public SSPSockets(SocketAddress sockAddr, String config) throws IOException, NoSuchAlgorithmException, InvalidAlgorithmParameterException, InvalidKeyException {
 		super(sockAddr);
-		nonceHash = MessageDigest.getInstance("SHA-256");
+		nonceHash = MessageDigest.getInstance(SHA256);
+		DHParameterSpec dhParams = new DHParameterSpec(p, g);
+	    KeyPairGenerator keyGen = KeyPairGenerator.getInstance("DH");
+	    keyGen.initialize(dhParams);
+		r = new SecureRandom();
+		myKeyAgree = KeyAgreement.getInstance("DH");
+		myDHKeyPair = keyGen.generateKeyPair();
+        myKeyAgree.init(myDHKeyPair.getPrivate());
+        
 		InputStream inputStream = null;
 		try {
 			inputStream = new FileInputStream(config);
@@ -150,8 +198,8 @@ public class SSPSockets extends DatagramSocket {
 		byte[] movieBytes = ByteBuffer.allocate(MOVIE_ID_LEN).put(movie.getBytes()).array();
 		byte[] pwdcBytes = ByteBuffer.allocate(PBESUITE_LEN).put(PWDCS.getBytes()).array();
 
-		Random r = new Random();
 		byte[] nounce = ByteBuffer.allocate(4).putInt(r.nextInt()).array();
+		n1 = nounce;
 
 		System.arraycopy(helloString.getBytes(), 0, buffer, 0, HELLO_LEN);
 		System.arraycopy(proxyID.getBytes(), 0, buffer, HELLO_LEN, PROXY_ID_LEN);
@@ -185,8 +233,8 @@ public class SSPSockets extends DatagramSocket {
 		return preparePayload(buffer, payloadLen, (byte) 0x02, (byte) 0x01);
 	}
 	
-	public byte[] getAuthChallenge(Map<String, String> accounts, SSPSockets s, SSPPacket ssp,
-			byte[] data) throws Exception, NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeySpecException,
+	public byte[] getAuthChallenge(Map<String, String> accounts, SSPPacket ssp,
+			byte[] data, String SIG_SUITE) throws Exception, NoSuchAlgorithmException, NoSuchPaddingException, InvalidKeySpecException,
 			InvalidKeyException, InvalidAlgorithmParameterException, IllegalBlockSizeException, BadPaddingException,
 			SignatureException {
 
@@ -227,7 +275,7 @@ public class SSPSockets extends DatagramSocket {
 		System.out.println("Transmited cipher: " + new String(pbeBytes, StandardCharsets.UTF_8));
 		System.out.println("Transmited cipher len: " + pbeBytes.length);
 
-		Cipher cDec = s.getPBECipher(pbeSuite, hashPassword, Cipher.DECRYPT_MODE);
+		Cipher cDec = getPBECipher(pbeSuite, hashPassword, Cipher.DECRYPT_MODE);
 
 		byte[] c = cDec.doFinal(pbeBytes);
 		MessageDigest dg = MessageDigest.getInstance("SHA-1");
@@ -417,5 +465,80 @@ public class SSPSockets extends DatagramSocket {
 			System.arraycopy(realFrame, ID_LENGTH + NONCE_LEN, frameMsg, 0, frameMsg.length);
 			return frameMsg;
 		}
+	}
+
+	public byte[] respChallenge(byte[] data, SSPPacket ssp, String sigSuite) throws Exception {
+		byte[] digSuite = ByteBuffer.allocate(DIG_SIG_LEN).put(data, 0, DIG_SIG_LEN).array();
+		String digSuiteName = new String(digSuite,StandardCharsets.UTF_8);
+		byte[] pubKey = ByteBuffer.allocate(PUBLIC_LEN).put(data,DIG_SIG_LEN,PUBLIC_LEN).array();
+		X509EncodedKeySpec spec = new X509EncodedKeySpec(pubKey);
+		String keyAlgo = getKeyAlgo(digSuiteName);
+		KeyFactory kf = KeyFactory.getInstance(keyAlgo);
+		Key publicKey = kf.generatePublic(spec);
+		Signature s = Signature.getInstance(digSuiteName);
+		s.initVerify((PublicKey) publicKey);
+		byte[] hashN1 = ByteBuffer.allocate(SHA256_LEN).put(data,DIG_SIG_LEN+PUBLIC_LEN,SHA256_LEN).array();
+		byte[] serverNounce = ByteBuffer.allocate(NONCE_LEN).put(data,DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN,NONCE_LEN).array();
+		int sigBlen = ssp.getPayloadSize() - (DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN+NONCE_LEN);
+		byte[] sigBytes = ByteBuffer.allocate(sigBlen).put(data,DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN+NONCE_LEN, sigBlen).array();
+		
+		s.update(data, DIG_SIG_LEN, PUBLIC_LEN+SHA256_LEN+NONCE_LEN);
+		s.verify(sigBytes);
+		
+		MessageDigest md = MessageDigest.getInstance(SHA256);
+		md.update(n1);
+		if(!MessageDigest.isEqual(md.digest(), hashN1))
+			throw new Exception("Nounce1 is different");
+		
+		String keyAlgo2 = getKeyAlgo(sigSuite);
+		KeyPairGenerator keyGen = KeyPairGenerator.getInstance(keyAlgo2);
+		ECGenParameterSpec ecSpec = new ECGenParameterSpec("secp256r1");
+		keyGen.initialize(ecSpec, new SecureRandom());
+		KeyPair keyPair = keyGen.generateKeyPair();
+		Signature signature = Signature.getInstance(sigSuite);
+		signature.initSign(keyPair.getPrivate());
+		
+		byte[] pubKeySigBytes = ByteBuffer.allocate(PUBLIC_LEN).put(keyPair.getPublic().getEncoded()).array(); 
+		md = MessageDigest.getInstance(SHA256);
+		byte[] hashedN2 = md.digest(serverNounce);
+		
+		byte[] nonce = ByteBuffer.allocate(4).putInt(r.nextInt()).array();
+		byte[] myDHPub = ByteBuffer.allocate(PUBLIC_LEN).put(myDHKeyPair.getPublic().getEncoded()).array();
+		
+		byte[] signInput = new byte[SHA256_LEN+PUBLIC_LEN+NONCE_LEN];
+		System.arraycopy(hashedN2, 0, signInput, 0, SHA256_LEN);
+		System.arraycopy(nonce, 0, signInput,SHA256_LEN, NONCE_LEN);
+		
+		System.err.println("Response challenge sign: "+signInput.length);
+		System.out.println("Response challenge dhkey: "+myDHPub.length);
+		System.out.println("Sum of lens: " + (SHA256_LEN+NONCE_LEN+PUBLIC_LEN));
+		System.arraycopy(myDHPub, 0, signInput, SHA256_LEN+NONCE_LEN, PUBLIC_LEN);
+		byte[] proxyDigSuite = ByteBuffer.allocate(DIG_SIG_LEN).put(sigSuite.getBytes()).array();
+		
+		signature.update(signInput);
+		byte[] signBytes = signature.sign();
+		byte[] payload = new byte[SHA256_LEN+NONCE_LEN+PUBLIC_LEN+PUBLIC_LEN+DIG_SIG_LEN+signBytes.length];
+		System.arraycopy(proxyDigSuite, 0, payload, 0, DIG_SIG_LEN);
+		System.arraycopy(pubKeySigBytes, 0, payload, DIG_SIG_LEN, PUBLIC_LEN);
+		System.arraycopy(signInput, 0, payload, DIG_SIG_LEN+PUBLIC_LEN,SHA256_LEN+PUBLIC_LEN+NONCE_LEN);
+		System.arraycopy(signBytes, 0, payload, DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN+PUBLIC_LEN+NONCE_LEN, signBytes.length);
+		
+		int payloadLen = payload.length;
+		
+		System.out.println("PayloadLen response: "+payloadLen);
+
+		return preparePayload(payload, payloadLen, (byte)0x02, (byte)0x03);
+	}
+
+	private String getKeyAlgo(String digSuiteName) {
+		String keyAlgo = digSuiteName.substring(digSuiteName.lastIndexOf("with"),digSuiteName.length()).replace("with", "");
+		if (keyAlgo.contains("/"))
+			keyAlgo = keyAlgo.substring(0,keyAlgo.indexOf("/"));
+		return keyAlgo;
+	}
+
+	public byte[] getKeyEstablish(SSPPacket ssp, byte[] buff) {
+		// TODO Auto-generated method stub
+		return null;
 	}
 }

@@ -24,33 +24,18 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
-import java.nio.charset.Charset;
-import java.nio.charset.CharsetDecoder;
 import java.nio.charset.StandardCharsets;
-import java.security.InvalidAlgorithmParameterException;
-import java.security.InvalidKeyException;
-import java.security.Key;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.spec.InvalidKeySpecException;
 import java.util.Arrays;
 import java.util.Properties;
-import java.util.Random;
 import java.util.Set;
 import java.util.stream.Collectors;
-
-import javax.crypto.BadPaddingException;
-import javax.crypto.Cipher;
-import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.NoSuchPaddingException;
-import javax.crypto.SecretKeyFactory;
-import javax.crypto.spec.PBEKeySpec;
-import javax.crypto.spec.PBEParameterSpec;
 
 import socket.SSPPacket;
 import socket.SSPSockets;
 
 class hjUDPproxy {
+	private static final String SIG_SUITE = "SHA512withECDSA";
+	
 	public static void main(String[] args) throws Exception {
 		InputStream inputStream = new FileInputStream("src/main/java/config.properties");
 		if (inputStream == null) {
@@ -76,9 +61,9 @@ class hjUDPproxy {
 
 		SSPSockets inSocket = new SSPSockets(inSocketAddress);
 		DatagramSocket outSocket = new DatagramSocket();
-		byte[] buffer = new byte[4 * 1024];
+		byte[] buffer = new byte[5 * 1024];
 
-		byte[] receiveBuffer = new byte[4*1024];
+		byte[] receiveBuffer = new byte[5*1024];
 		DatagramPacket receivePacket = new DatagramPacket(buffer, buffer.length);
 		
 		byte[] helloSSP = inSocket.helloPayload(args, buffer);
@@ -99,7 +84,10 @@ class hjUDPproxy {
 		ObjectInputStream ois = new ObjectInputStream(bais);
 		SSPPacket ssp = (SSPPacket) ois.readObject();
 		byte[] data = ssp.getPayload();
-        System.out.println("here");
+        
+		byte[] sspResp = inSocket.respChallenge(data,ssp,SIG_SUITE);
+		p.setData(sspResp);
+		inSocket.send(p);
         
 		
 		while (true) {
