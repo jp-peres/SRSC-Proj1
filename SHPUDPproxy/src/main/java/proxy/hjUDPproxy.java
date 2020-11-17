@@ -88,7 +88,14 @@ class hjUDPproxy {
 		byte[] sspResp = inSocket.respChallenge(data,ssp,SIG_SUITE);
 		p.setData(sspResp);
 		inSocket.send(p);
+        inSocket.receive(receivePacket);
+        bais = new ByteArrayInputStream(receivePacket.getData(), 0, receivePacket.getLength());
+		ois = new ObjectInputStream(bais);
+		ssp = (SSPPacket) ois.readObject();
+		data = ssp.getPayload();
         
+        byte[] sspDone = inSocket.handShakeDone(data,ssp);
+		
 		
 		while (true) {
 			DatagramPacket inPacket = new DatagramPacket(buffer, buffer.length);

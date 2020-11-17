@@ -5,13 +5,10 @@ import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.io.Serializable;
 import java.math.BigInteger;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-import java.net.InetSocketAddress;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -28,6 +25,7 @@ import java.security.SecureRandom;
 import java.security.Signature;
 import java.security.SignatureException;
 import java.security.spec.ECGenParameterSpec;
+import java.security.spec.EncodedKeySpec;
 import java.security.spec.InvalidKeySpecException;
 import java.security.spec.X509EncodedKeySpec;
 import java.net.SocketAddress;
@@ -40,6 +38,7 @@ import javax.crypto.IllegalBlockSizeException;
 import javax.crypto.KeyAgreement;
 import javax.crypto.Mac;
 import javax.crypto.NoSuchPaddingException;
+import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.ShortBufferException;
 import javax.crypto.spec.DHParameterSpec;
@@ -71,8 +70,10 @@ public class SSPSockets extends DatagramSocket {
 	private static final int PUBLIC_LEN = 2048;
 	private static final int SHA256_LEN = 32;
 	private static final int HELLO_LEN = 5;
-	private static final String SIG_SUITE = "SHA512withRSA/PSS";
+	
+	private static final int CIPHER_LEN = 64;
 	private static final String SHA256 = "SHA-256";
+	private String mySigSuite;
 	private MessageDigest nonceHash;
     private byte[] salt = new byte[] { (byte)0x7d, 0x60, 0x43, (byte)0x5f, 0x02, (byte) 0xe9, (byte) 0xe0, (byte) 0xae };
     private int iterCount = 2048;
@@ -85,12 +86,11 @@ public class SSPSockets extends DatagramSocket {
     private KeyPair myDHKeyPair;
     private Key otherPubDHKey;
     private KeyAgreement myKeyAgree;
+    private byte[] secretBytes;
     
-    
+    private KeyPair myKeys;
     private Key pubKeyProxy;
-    private Key privKeyProxy;
     private Key pubKeyServer;
-    private Key privKeyServer;
 	// Properties
 	private String cipherSuite;
 	private String algorithm;
@@ -221,15 +221,12 @@ public class SSPSockets extends DatagramSocket {
 		Cipher cipher = getPBECipher(PWDCS, hash, Cipher.ENCRYPT_MODE);
 		
 		byte[] finalCipher = cipher.doFinal(hashDig, 0, hashDig.length);
-		System.out.println("finalCipher: " + finalCipher.length);
-		System.out.println("Cipher sent: " + new String(finalCipher,StandardCharsets.UTF_8));
 		System.arraycopy(finalCipher, 0, buffer,
 				HELLO_LEN + PROXY_ID_LEN + MOVIE_ID_LEN + NONCE_LEN + PBESUITE_LEN, finalCipher.length);
 
 		int payloadLen = HELLO_LEN + PROXY_ID_LEN + MOVIE_ID_LEN + NONCE_LEN + PBESUITE_LEN
 				+ finalCipher.length;
-
-		System.out.println("Payload expected: " + payloadLen);
+		
 		return preparePayload(buffer, payloadLen, (byte) 0x02, (byte) 0x01);
 	}
 	
@@ -289,21 +286,22 @@ public class SSPSockets extends DatagramSocket {
 		byte[] sigInput = new byte[SHA256_LEN + NONCE_LEN + PUBLIC_LEN];
 		KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
 		keyGen.initialize(PUBLIC_LEN, new SecureRandom());
-		KeyPair keyPair = keyGen.generateKeyPair();
+		myKeys = keyGen.generateKeyPair();
 		Signature signature = Signature.getInstance(SIG_SUITE);
-		signature.initSign(keyPair.getPrivate());
+		signature.initSign(myKeys.getPrivate());
 
 		byte[] proxyNonceDigest = nonceHash.digest(nonce);
 		SecureRandom r = new SecureRandom();
 		byte[] serverNonce = ByteBuffer.allocate(4).putInt(r.nextInt()).array();
-		byte[] publicKey = ByteBuffer.allocate(PUBLIC_LEN).put(keyPair.getPublic().getEncoded()).array();
+		n2 = serverNonce;
+		
+		byte[] publicKey = ByteBuffer.allocate(PUBLIC_LEN).put(myKeys.getPublic().getEncoded()).array();
 		
 		System.arraycopy(publicKey, 0, sigInput, 0, PUBLIC_LEN);
 		System.arraycopy(proxyNonceDigest, 0, sigInput, PUBLIC_LEN, SHA256_LEN);
 		System.arraycopy(serverNonce, 0, sigInput, PUBLIC_LEN + SHA256_LEN, NONCE_LEN);
 		signature.update(sigInput);
 
-		System.out.println("Data len: "+ data.length);
 		byte[] signatureBytes = signature.sign();
 		byte[] payload = new byte[SHA256_LEN + NONCE_LEN + PUBLIC_LEN + signatureBytes.length];
 		System.arraycopy(SIG_SUITE.getBytes(), 0, data, 0, DIG_SIG_LEN);
@@ -311,6 +309,7 @@ public class SSPSockets extends DatagramSocket {
 		System.arraycopy(signatureBytes, 0, data, DIG_SIG_LEN + PUBLIC_LEN + NONCE_LEN + SHA256_LEN,
 				signatureBytes.length);
 
+		mySigSuite = SIG_SUITE;
 		int payloadLen = PUBLIC_LEN + NONCE_LEN + SHA256_LEN + signatureBytes.length;
 
 		return preparePayload(data, payloadLen, (byte)0x02, (byte)0x02);
@@ -474,9 +473,11 @@ public class SSPSockets extends DatagramSocket {
 		X509EncodedKeySpec spec = new X509EncodedKeySpec(pubKey);
 		String keyAlgo = getKeyAlgo(digSuiteName);
 		KeyFactory kf = KeyFactory.getInstance(keyAlgo);
-		Key publicKey = kf.generatePublic(spec);
+		pubKeyServer = kf.generatePublic(spec);
+		mySigSuite = sigSuite;
+	
 		Signature s = Signature.getInstance(digSuiteName);
-		s.initVerify((PublicKey) publicKey);
+		s.initVerify((PublicKey) pubKeyServer);
 		byte[] hashN1 = ByteBuffer.allocate(SHA256_LEN).put(data,DIG_SIG_LEN+PUBLIC_LEN,SHA256_LEN).array();
 		byte[] serverNounce = ByteBuffer.allocate(NONCE_LEN).put(data,DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN,NONCE_LEN).array();
 		int sigBlen = ssp.getPayloadSize() - (DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN+NONCE_LEN);
@@ -494,24 +495,22 @@ public class SSPSockets extends DatagramSocket {
 		KeyPairGenerator keyGen = KeyPairGenerator.getInstance(keyAlgo2);
 		ECGenParameterSpec ecSpec = new ECGenParameterSpec("secp256r1");
 		keyGen.initialize(ecSpec, new SecureRandom());
-		KeyPair keyPair = keyGen.generateKeyPair();
+		myKeys = keyGen.generateKeyPair();
 		Signature signature = Signature.getInstance(sigSuite);
-		signature.initSign(keyPair.getPrivate());
+		signature.initSign(myKeys.getPrivate());
 		
-		byte[] pubKeySigBytes = ByteBuffer.allocate(PUBLIC_LEN).put(keyPair.getPublic().getEncoded()).array(); 
+		byte[] pubKeySigBytes = ByteBuffer.allocate(PUBLIC_LEN).put(myKeys.getPublic().getEncoded()).array(); 
 		md = MessageDigest.getInstance(SHA256);
 		byte[] hashedN2 = md.digest(serverNounce);
 		
 		byte[] nonce = ByteBuffer.allocate(4).putInt(r.nextInt()).array();
+		n3 = nonce;
 		byte[] myDHPub = ByteBuffer.allocate(PUBLIC_LEN).put(myDHKeyPair.getPublic().getEncoded()).array();
 		
 		byte[] signInput = new byte[SHA256_LEN+PUBLIC_LEN+NONCE_LEN];
 		System.arraycopy(hashedN2, 0, signInput, 0, SHA256_LEN);
 		System.arraycopy(nonce, 0, signInput,SHA256_LEN, NONCE_LEN);
-		
-		System.err.println("Response challenge sign: "+signInput.length);
-		System.out.println("Response challenge dhkey: "+myDHPub.length);
-		System.out.println("Sum of lens: " + (SHA256_LEN+NONCE_LEN+PUBLIC_LEN));
+
 		System.arraycopy(myDHPub, 0, signInput, SHA256_LEN+NONCE_LEN, PUBLIC_LEN);
 		byte[] proxyDigSuite = ByteBuffer.allocate(DIG_SIG_LEN).put(sigSuite.getBytes()).array();
 		
@@ -524,21 +523,140 @@ public class SSPSockets extends DatagramSocket {
 		System.arraycopy(signBytes, 0, payload, DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN+PUBLIC_LEN+NONCE_LEN, signBytes.length);
 		
 		int payloadLen = payload.length;
-		
-		System.out.println("PayloadLen response: "+payloadLen);
 
 		return preparePayload(payload, payloadLen, (byte)0x02, (byte)0x03);
 	}
 
 	private String getKeyAlgo(String digSuiteName) {
-		String keyAlgo = digSuiteName.substring(digSuiteName.lastIndexOf("with"),digSuiteName.length()).replace("with", "");
+		String keyAlgo = digSuiteName.substring(digSuiteName.lastIndexOf("with"),digSuiteName.length()).replace("with", "").trim();
 		if (keyAlgo.contains("/"))
 			keyAlgo = keyAlgo.substring(0,keyAlgo.indexOf("/"));
+		else if (keyAlgo.contains("ECDSA"))
+			keyAlgo = keyAlgo.substring(0,keyAlgo.length()-3);
 		return keyAlgo;
 	}
 
-	public byte[] getKeyEstablish(SSPPacket ssp, byte[] buff) {
-		// TODO Auto-generated method stub
-		return null;
+	public byte[] getKeyEstablish(SSPPacket ssp, byte[] buff) throws Exception {
+		byte[] digSuite = ByteBuffer.allocate(DIG_SIG_LEN).put(buff, 0, DIG_SIG_LEN).array();
+		String digSuiteName = new String(digSuite,StandardCharsets.UTF_8).trim();
+		byte[] pubKey = ByteBuffer.allocate(PUBLIC_LEN).put(buff,DIG_SIG_LEN,PUBLIC_LEN).array();
+		
+		EncodedKeySpec spec = new X509EncodedKeySpec(pubKey);
+		String keyAlgo = getKeyAlgo(digSuiteName);
+		KeyFactory kf = KeyFactory.getInstance(keyAlgo);
+		PublicKey publicKey = kf.generatePublic(spec);
+		byte[] hashN2 = ByteBuffer.allocate(SHA256_LEN).put(buff,DIG_SIG_LEN+PUBLIC_LEN,SHA256_LEN).array();
+		byte[] recN3 = ByteBuffer.allocate(NONCE_LEN).put(buff,DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN,NONCE_LEN).array();
+		byte[] dhProxyKey = ByteBuffer.allocate(PUBLIC_LEN).put(buff,DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN+NONCE_LEN,PUBLIC_LEN).array();
+		spec = new X509EncodedKeySpec(dhProxyKey);
+		kf = KeyFactory.getInstance("DH");
+		Key publicDHKey = kf.generatePublic(spec);
+		
+		byte[] sigBytes = new byte[ssp.getPayloadSize() - (DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN+NONCE_LEN+PUBLIC_LEN)];
+		System.arraycopy(buff, DIG_SIG_LEN+PUBLIC_LEN+SHA256_LEN+NONCE_LEN+PUBLIC_LEN, sigBytes, 0, sigBytes.length);
+		
+		Signature s = Signature.getInstance(digSuiteName);
+		s.initVerify(publicKey);
+		s.update(buff, DIG_SIG_LEN+PUBLIC_LEN, PUBLIC_LEN+SHA256_LEN+NONCE_LEN);
+		s.verify(sigBytes);
+		
+		MessageDigest md = MessageDigest.getInstance(SHA256);
+		md.update(n2);
+		if(!MessageDigest.isEqual(md.digest(), hashN2))
+			throw new Exception("Nonce2 is different");
+		
+		myKeyAgree.doPhase(publicDHKey, true);
+		secretBytes = myKeyAgree.generateSecret();
+				
+		md = MessageDigest.getInstance(SHA256);
+		byte[] hashedN3 = md.digest(recN3);
+		byte[] nonce = ByteBuffer.allocate(4).putInt(r.nextInt()).array();
+		byte[] myDHPub = ByteBuffer.allocate(PUBLIC_LEN).put(myDHKeyPair.getPublic().getEncoded()).array();
+
+		
+		byte[] sealedEnv = new byte[NONCE_LEN+secretBytes.length];
+		System.arraycopy(nonce, 0, sealedEnv, 0, NONCE_LEN);
+		System.arraycopy(secretBytes, 0, sealedEnv, NONCE_LEN, secretBytes.length);
+		Cipher c = Cipher.getInstance("ECIESwithAES-CBC");
+		
+		c.init(Cipher.ENCRYPT_MODE, publicKey);
+		byte[] encSealedEnv = c.doFinal(sealedEnv);
+		
+		byte[] encSealedEnv2 = ByteBuffer.allocate(PUBLIC_LEN).put(encSealedEnv).array();
+		
+		Signature mySign = Signature.getInstance("SHA512withRSA/PSS");
+		mySign.initSign(myKeys.getPrivate());
+		mySign.update(myDHPub);
+		byte[] signed = mySign.sign();
+		
+		
+		
+		byte[] payload = new byte[PUBLIC_LEN+SHA256_LEN+PUBLIC_LEN+DIG_SIG_LEN+signed.length];
+		System.arraycopy(mySigSuite.getBytes(), 0, payload, 0, DIG_SIG_LEN);
+
+		System.out.println("Sending... :" +new String(hashedN3,StandardCharsets.UTF_8));
+		System.out.println("Payload.. : "+ payload.length);
+		System.out.println("encseal :" + encSealedEnv2.length);
+		System.out.println("sum :" + (DIG_SIG_LEN+SHA256_LEN+PUBLIC_LEN));
+		
+		
+		System.arraycopy(hashedN3, 0, payload, DIG_SIG_LEN, SHA256_LEN);
+		System.arraycopy(myDHPub, 0, payload, DIG_SIG_LEN+SHA256_LEN, PUBLIC_LEN);
+		System.arraycopy(encSealedEnv2, 0, payload, DIG_SIG_LEN+SHA256_LEN+PUBLIC_LEN, PUBLIC_LEN);
+		System.arraycopy(signed, 0, payload, DIG_SIG_LEN+SHA256_LEN+PUBLIC_LEN+PUBLIC_LEN,signed.length);
+		
+		
+		int payloadLen = DIG_SIG_LEN+SHA256_LEN+PUBLIC_LEN+PUBLIC_LEN+signed.length;
+		
+		System.out.println("PayloadLen response: "+payloadLen);
+		return preparePayload(payload, payloadLen, (byte)0x02, (byte)0x04);
+	}
+
+	public byte[] handShakeDone(byte[] data, SSPPacket ssp) throws Exception {
+		byte[] digSuite = ByteBuffer.allocate(DIG_SIG_LEN).put(data, 0, DIG_SIG_LEN).array();
+		String digSuiteName = new String(digSuite,StandardCharsets.UTF_8).trim();
+		byte[] hashN3 = ByteBuffer.allocate(SHA256_LEN).put(data,DIG_SIG_LEN,SHA256_LEN).array();
+		System.out.println("Read... :"+ new String(hashN3,StandardCharsets.UTF_8));
+		byte[] dhKey = ByteBuffer.allocate(SHA256_LEN).put(data,DIG_SIG_LEN+SHA256_LEN,PUBLIC_LEN).array();
+		byte[] sealedEnv = ByteBuffer.allocate(PUBLIC_LEN).put(data,DIG_SIG_LEN+SHA256_LEN+PUBLIC_LEN,PUBLIC_LEN).array();
+		int sigSize = ssp.getPayloadSize() - (DIG_SIG_LEN+SHA256_LEN+PUBLIC_LEN+PUBLIC_LEN);
+		byte[] sigBytes = ByteBuffer.allocate(sigSize).put(data,(DIG_SIG_LEN+SHA256_LEN+PUBLIC_LEN+PUBLIC_LEN),sigSize).array();
+		
+		MessageDigest md = MessageDigest.getInstance(SHA256);
+		byte[] hashKey = md.digest(n3);
+		
+		Signature s = Signature.getInstance(digSuiteName);
+		s.initVerify((PublicKey) pubKeyServer);
+		s.update(dhKey);
+		s.verify(sigBytes);
+		
+		if(!MessageDigest.isEqual(hashKey, hashN3))
+			throw new Exception("Nonce 3 not equal");
+		
+		Cipher c = Cipher.getInstance("EC");
+		c.init(Cipher.DECRYPT_MODE, myKeys.getPrivate());
+		byte[] decrypted = c.doFinal();
+		md = MessageDigest.getInstance(SHA256);
+		md.update(decrypted,0,NONCE_LEN);
+		byte[] hashn4 = md.digest();
+		
+		byte[] secretBytes = ByteBuffer.allocate(PUBLIC_LEN).put(decrypted,NONCE_LEN,decrypted.length-NONCE_LEN).array();
+		
+		Cipher c2 = Cipher.getInstance("AES");
+		byte[] secretKey = ByteBuffer.allocate(16).put(secretBytes,0,16).array();
+		SecretKey sk = new SecretKeySpec(secretKey, 0, secretKey.length, "AES");
+		c2.init(Cipher.ENCRYPT_MODE, sk);
+		
+		byte[] finish = "FINISHED".getBytes();
+		byte[] payloadCiph = new byte[finish.length+SHA256_LEN];
+
+		System.arraycopy(finish, 0, payloadCiph, 0,finish.length);
+		System.arraycopy(hashn4, 0, payloadCiph, finish.length,SHA256_LEN);
+		
+		byte[] enc = c2.doFinal(payloadCiph);
+		
+		int payloadLen = enc.length;
+		System.out.println("PayloadLen response: "+payloadLen);
+		return preparePayload(enc, payloadLen, (byte)0x02, (byte)0x05);
 	}
 }

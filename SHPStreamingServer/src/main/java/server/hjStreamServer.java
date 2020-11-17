@@ -81,8 +81,8 @@ class hjStreamServer {
 						response = new DatagramPacket(challengePayload,challengePayload.length,addr);
 						break;
 					case 0x03:
-						byte[] keySA = s.getKeySA(buff)
-						System.out.println("im here");
+						byte[] keySA = s.getKeyEstablish(ssp,buff);
+						response = new DatagramPacket(keySA,keySA.length,addr);
 						break;
 				}
 			}
