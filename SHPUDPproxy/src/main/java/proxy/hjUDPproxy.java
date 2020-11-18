@@ -34,10 +34,10 @@ import socket.SSPPacket;
 import socket.SSPSockets;
 
 class hjUDPproxy {
-	private static final String SIG_SUITE = "SHA512withECDSA";
+	private static final String SIG_SUITE = "SHA256withRSA/PSS";
 	
 	public static void main(String[] args) throws Exception {
-		InputStream inputStream = new FileInputStream("src/main/java/config.properties");
+		InputStream inputStream = new FileInputStream("config.properties");
 		if (inputStream == null) {
 			System.err.println("Configuration file not found!");
 			System.exit(1);
@@ -49,10 +49,16 @@ class hjUDPproxy {
 		
 		Properties properties = new Properties();
 		properties.load(inputStream);
-		String proxyaddr = properties.getProperty("proxyaddr");
-		String streamaddr = properties.getProperty("streamaddr");
-		String destinations = properties.getProperty("localdelivery");
-		
+		String proxyaddr = null;
+		String streamaddr = null;
+		String destinations = null;
+		try {
+			proxyaddr = properties.getProperty("proxyaddr");
+			streamaddr = properties.getProperty("streamaddr");
+			destinations = properties.getProperty("localdelivery");
+		} catch(Exception ex) {
+			System.err.println("Missing fields from config.properties: proxyaddr and streamaddr. Where remote is proxyaddr and streamaddr is the address for the server. ex: proxyaddr:localhost:9999 and streamaddr:localhost:8888");
+		}
 		SocketAddress inSocketAddress = parseSocketAddress(proxyaddr);
 		SocketAddress addr = parseSocketAddress(streamaddr);
 		
@@ -69,13 +75,9 @@ class hjUDPproxy {
 		byte[] helloSSP = inSocket.helloPayload(args, buffer);
 		
 		String payloadCont = new String(helloSSP,StandardCharsets.UTF_8);
-		System.out.println(payloadCont);
-		
-		System.out.println("HelloSSP len: "+helloSSP.length);
 		
 		System.arraycopy(helloSSP, 0, buffer, 0, helloSSP.length);
 		
-		System.out.println("buffer len: "+ buffer.length);
 		DatagramPacket p = new DatagramPacket(buffer, helloSSP.length);
 		p.setSocketAddress(addr);
         inSocket.send(p);
@@ -95,15 +97,22 @@ class hjUDPproxy {
 		data = ssp.getPayload();
         
         byte[] sspDone = inSocket.handShakeDone(data,ssp);
-		
-		
+		p.setData(sspDone);
+		inSocket.send(p);
+		SSPPacket sspreceived;
+		byte[] original;
 		while (true) {
 			DatagramPacket inPacket = new DatagramPacket(buffer, buffer.length);
 			inSocket.receive(inPacket); // if remote is unicast
-			System.out.print("*");
+			bais = new ByteArrayInputStream(inPacket.getData(), 0, inPacket.getLength());
+			ois = new ObjectInputStream(bais);
+			sspreceived = (SSPPacket) ois.readObject();
+			original = inSocket.getFrame(sspreceived);
+			inPacket.setData(original);
 			for (SocketAddress outSocketAddress : outSocketAddressSet) {
 				outSocket.send(new DatagramPacket(inPacket.getData(), inPacket.getLength(), outSocketAddress));
 			}
+			System.out.print("*");
 		}	
 	}
 	
